@@ -1,111 +1,114 @@
 #!/usr/bin/env python3
 
-import os
 import logging
+from os import getenv
+import re
 import mysql.connector
 from typing import List
-from mysql.connector import connection
+import bcrypt
+
+# PII fields to be redacted
+PII_FIELDS = ("name", "email", "phone", "ssn", "password")
 
 
 class RedactingFormatter(logging.Formatter):
-    """
-    Redacting Formatter class to sanitize log messages by hiding sensitive fields.
-    """
-    REDACTION = "***"
-    FORMAT = "[HOLBERTON] %(asctime)s %(name)s %(levelname)s %(message)s"
-    SEPARATOR = "; "
+    """ Redacting Formatter class """
 
-    def __init__(self, fields: List[str]):
+    REDACTION = "***"
+    FORMAT = "[HOLBERTON] user_data INFO %(asctime)s: %(message)s"
+    SEPARATOR = ";"
+
+    def __init__(self):
         super(RedactingFormatter, self).__init__(self.FORMAT)
-        self.fields = fields
 
     def format(self, record: logging.LogRecord) -> str:
+        message = super().format(record)
+        return self.filter_datum(PII_FIELDS, self.REDACTION, message, self.SEPARATOR)
+
+    @staticmethod
+    def filter_datum(fields: List[str], redaction: str, message: str, separator: str) -> str:
         """
-        Replace PII fields in the log message with the redacted value.
+        Replaces the occurrences of PII fields in the log message with '***'.
         """
-        message = super(RedactingFormatter, self).format(record)
-        for field in self.fields:
-            message = message.replace(field, self.REDACTION)
+        for field in fields:
+            message = re.sub(f'{field}=[^;]+', f'{field}={redaction}', message)
         return message
-
-
-PII_FIELDS = ("name", "email", "phone", "ssn", "password")
 
 
 def get_logger() -> logging.Logger:
     """
-    Creates and configures a logger named 'user_data' that only logs up to INFO level.
+    Function to create a logger named 'user_data' with certain properties.
     """
     logger = logging.getLogger("user_data")
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    # Create a StreamHandler with RedactingFormatter
-    handler = logging.StreamHandler()
-    handler.setFormatter(RedactingFormatter(fields=PII_FIELDS))
+    # StreamHandler with RedactingFormatter
+    stream_handler = logging.StreamHandler()
+    formatter = RedactingFormatter()
+    stream_handler.setFormatter(formatter)
 
-    # Add the handler to the logger
-    logger.addHandler(handler)
+    logger.addHandler(stream_handler)
 
     return logger
 
 
-def get_db() -> connection.MySQLConnection:
+def get_db() -> mysql.connector.connection.MySQLConnection:
     """
-    Returns a connection to the database using environment variables.
+    Returns a connector to the MySQL database using environment variables for credentials.
     """
-    db_username = os.getenv('PERSONAL_DATA_DB_USERNAME', 'root')
-    db_password = os.getenv('PERSONAL_DATA_DB_PASSWORD', '')
-    db_host = os.getenv('PERSONAL_DATA_DB_HOST', 'localhost')
-    db_name = os.getenv('PERSONAL_DATA_DB_NAME')
+    username = getenv("PERSONAL_DATA_DB_USERNAME", "root")
+    password = getenv("PERSONAL_DATA_DB_PASSWORD", "")
+    host = getenv("PERSONAL_DATA_DB_HOST", "localhost")
+    db_name = getenv("PERSONAL_DATA_DB_NAME")
 
-    try:
-        conn = mysql.connector.connect(
-            user=db_username,
-            password=db_password,
-            host=db_host,
-            database=db_name
-        )
-        return conn
-    except mysql.connector.Error as err:
-        logger = get_logger()
-        logger.error(f"Error: {err}")
-        return None
+    return mysql.connector.connect(
+        user=username,
+        password=password,
+        host=host,
+        database=db_name
+    )
+
+
+def hash_password(password: str) -> bytes:
+    """
+    Hash a password string using bcrypt.
+    """
+    salt = bcrypt.gensalt()
+    hashed_password = bcrypt.hashpw(password.encode(), salt)
+    return hashed_password
+
+
+def is_valid(hashed_password: bytes, password: str) -> bool:
+    """
+    Validate if a provided password matches the hashed password.
+    """
+    return bcrypt.checkpw(password.encode(), hashed_password)
 
 
 def main():
     """
-    Main function to retrieve all users and log them in a filtered format.
+    Main function to connect to the database, retrieve user data, and log it with PII redaction.
     """
-    # Get logger
     logger = get_logger()
+    db = get_db()
+    cursor = db.cursor()
 
-    # Get database connection
-    db_conn = get_db()
+    cursor.execute("SELECT * FROM users;")
+    rows = cursor.fetchall()
 
-    if db_conn:
-        try:
-            cursor = db_conn.cursor(dictionary=True)
-            cursor.execute("SELECT * FROM users;")
-            rows = cursor.fetchall()
+    for row in rows:
+        name, email, phone, ssn, password, ip, last_login, user_agent = row
+        log_msg = (
+            f"name={name}; email={email}; phone={phone}; ssn={ssn}; "
+            f"password={password}; ip={ip}; last_login={last_login}; user_agent={user_agent};"
+        )
+        logger.info(log_msg)
 
-            for row in rows:
-                log_message = (
-                    f'name={row["name"]}; email={row["email"]}; phone={row["phone"]}; '
-                    f'ssn={row["ssn"]}; password={row["password"]}; ip={row["ip"]}; '
-                    f'last_login={row["last_login"]}; user_agent={row["user_agent"]};'
-                )
-                logger.info(log_message)
-        except mysql.connector.Error as err:
-            logger.error(f"Error executing query: {err}")
-        finally:
-            cursor.close()
-            db_conn.close()
-    else:
-        logger.error("Could not connect to the database.")
+    cursor.close()
+    db.close()
 
 
-# Execute the main function only when the module is executed
 if __name__ == "__main__":
     main()
 
