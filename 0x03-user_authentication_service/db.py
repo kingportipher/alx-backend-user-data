@@ -1,47 +1,57 @@
-from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import InvalidRequestError
-from sqlalchemy.orm.session import Session
-from sqlalchemy.orm import query
-from user import User
+from sqlalchemy.orm.exc import NoResultFound
+from user import Base, User
+from typing import TypeVar
+
+VALID_FIELDS = ['id', 'email', 'hashed_password', 'session_id', 'reset_token']
+
 
 class DB:
-    """DB class to manage database operations
-    """
+    """DB class."""
 
-    def __init__(self) -> None:
-        """Initialize a new DB instance"""
-        self._engine = create_engine("sqlite:///a.db", echo=True)
-        Base.metadata.drop_all(self._engine)
+    def __init__(self):
+        """Constructor."""
+        self._engine = create_engine("sqlite:///a.db", echo=False)
         Base.metadata.create_all(self._engine)
         self.__session = None
 
     @property
-    def _session(self) -> Session:
-        """Memoized session object"""
+    def _session(self):
+        """_session."""
         if self.__session is None:
             DBSession = sessionmaker(bind=self._engine)
             self.__session = DBSession()
         return self.__session
 
     def add_user(self, email: str, hashed_password: str) -> User:
-        """Add a new user to the database"""
-        new_user = User(email=email, hashed_password=hashed_password)
-        session = self._session  # Get the memoized session
-        session.add(new_user)
+        """Add a new user to the database."""
+        if not email or not hashed_password:
+            raise ValueError("Email and hashed password are required.")
+        user = User(email=email, hashed_password=hashed_password)
+        session = self._session
+        session.add(user)
         session.commit()
-        session.refresh(new_user)  # Refresh to load new attributes like 'id'
-        return new_user
+        return user
 
     def find_user_by(self, **kwargs) -> User:
-        """Find a user by arbitrary keyword argumen
-        """
-        session = self._session  # Get the memoized session
+        """Find a user by specified criteria."""
+        if not kwargs or any(x not in VALID_FIELDS for x in kwargs):
+            raise InvalidRequestError("Invalid field(s) provided.")
+        session = self._session
         try:
-            # Perform query based on arbitrary keyword arguments (kwargs)
-            user = session.query(User).filter_by(**kwargs).one()
-            return user
+            return session.query(User).filter_by(**kwargs).one()
         except NoResultFound:
-            raise NoResultFound("No result found for the query.")
-        except InvalidRequestError:
-            raise InvalidRequestError("Invalid query arguments.")
+            raise ValueError("No user found matching the criteria.")
 
+    def update_user(self, user_id: int, **kwargs) -> None:
+        """Update an existing user."""
+        session = self._session
+        user = self.find_user_by(id=user_id)
+        for k, v in kwargs.items():
+            if k not in VALID_FIELDS:
+                raise ValueError("Invalid field for update.")
+            setattr(user, k, v)
+        session.commit()
